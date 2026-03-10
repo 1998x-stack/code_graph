@@ -1,87 +1,39 @@
-"""
-Utilities for generating deterministic node IDs.
-"""
-
-import hashlib
-from pathlib import Path
-from typing import Optional
-
-
-def generate_node_id(node_type: str, abs_path: str, *args) -> str:
-    """
-    Generate a deterministic node ID based on the node type, absolute path, 
-    and additional identifiers.
-    
-    Args:
-        node_type: The type of the node (e.g., 'func', 'class', 'file', 'dir')
-        abs_path: The absolute path of the file/directory
-        *args: Additional identifiers (e.g., class name, function name)
-    
-    Returns:
-        A deterministic ID string in the format "type::path::arg1::arg2::..."
-    """
-    parts = [node_type, abs_path] + [str(arg) for arg in args]
-    path_part = "::".join(parts)
-    
-    # Create a hash to ensure uniqueness while keeping the ID readable
-    path_hash = hashlib.md5(path_part.encode()).hexdigest()[:8]
-    
-    return f"{path_part}::{path_hash}"
+# utils/id_gen.py
+# ── 确定性节点 ID 生成器 ──────────────────────────────────────────────
+# 规则：全局唯一 + 可读 + 可逆推来源
+# dir::<abs>  /  file::<abs>  /  class::<abs>::<Class>
+# func::<abs>::<Class>::<fn>  (方法)
+# func::<abs>::<fn>           (顶级函数)
+import os
 
 
-def generate_function_id(abs_path: str, class_name: Optional[str], fn_name: str) -> str:
-    """
-    Generate a deterministic ID for a function.
-    
-    Args:
-        abs_path: The absolute path of the file containing the function
-        class_name: The name of the class containing the function (None if standalone function)
-        fn_name: The name of the function
-    
-    Returns:
-        A deterministic ID string for the function
-    """
+def _abs(path: str) -> str:
+    return os.path.abspath(path)
+
+
+def dir_id(dir_path: str) -> str:
+    return f"dir::{_abs(dir_path)}"
+
+
+def file_id(file_path: str) -> str:
+    return f"file::{_abs(file_path)}"
+
+
+def class_id(file_path: str, class_name: str) -> str:
+    return f"class::{_abs(file_path)}::{class_name}"
+
+
+def func_id(
+    file_path: str,
+    func_name: str,
+    class_name: str | None = None,
+) -> str:
+    base = _abs(file_path)
     if class_name:
-        return generate_node_id("func", abs_path, class_name, fn_name)
-    else:
-        return generate_node_id("func", abs_path, fn_name)
+        return f"func::{base}::{class_name}::{func_name}"
+    return f"func::{base}::{func_name}"
 
 
-def generate_class_id(abs_path: str, class_name: str) -> str:
-    """
-    Generate a deterministic ID for a class.
-    
-    Args:
-        abs_path: The absolute path of the file containing the class
-        class_name: The name of the class
-    
-    Returns:
-        A deterministic ID string for the class
-    """
-    return generate_node_id("class", abs_path, class_name)
-
-
-def generate_file_id(abs_path: str) -> str:
-    """
-    Generate a deterministic ID for a file.
-    
-    Args:
-        abs_path: The absolute path of the file
-    
-    Returns:
-        A deterministic ID string for the file
-    """
-    return generate_node_id("file", abs_path)
-
-
-def generate_dir_id(abs_path: str) -> str:
-    """
-    Generate a deterministic ID for a directory.
-    
-    Args:
-        abs_path: The absolute path of the directory
-    
-    Returns:
-        A deterministic ID string for the directory
-    """
-    return generate_node_id("dir", abs_path)
+def relation_id(source_id: str, rel_type: str, target_id: str) -> str:
+    """关系 ID = <source>::<type>::<target>（保证唯一）"""
+    return f"{source_id}::{rel_type}::{target_id}"

@@ -1,204 +1,153 @@
-"""
-Main entry point for the code graph application.
-"""
+#!/usr/bin/env python3
+# main.py
+# ── 项目入口 ──────────────────────────────────────────────────────────
+from __future__ import annotations
 
+import os
 import sys
-from pathlib import Path
 
-# Add the project root to the path
-project_root = Path(__file__).parent
-sys.path.insert(0, str(project_root))
+from tqdm import tqdm
 
 from cli.args import parse_args
+from config.settings import settings
 from core.graph.knowledge_graph import KnowledgeGraph
 from core.parser.factory import ParserFactory
-from core.incremental.updater import IncrementalUpdater
+from schema.enums import NodeType
 from storage.graph_store import GraphStore
-from utils.file_utils import walk_project
+from utils.file_utils import walk_project, read_file
 from utils.logger import get_logger
-from llm.client import OpenAIClient
-from config.settings import settings
+
+logger = get_logger(__name__)
 
 
-def build_graph(args):
-    """
-    Build the knowledge graph from a project.
-    
-    Args:
-        args: Parsed command line arguments
-    """
-    logger = get_logger(__name__)
-    logger.info(f"Building knowledge graph for project: {args.project_path}")
-    
-    # Create the knowledge graph
-    graph = KnowledgeGraph()
-    
-    # Create the incremental updater
-    updater = IncrementalUpdater(graph)
-    
-    # Process all files in the project
-    file_count = 0
-    for file_path in walk_project(args.project_path, args.exclude):
-        try:
-            # Determine the file extension
-            ext = '.' + str(file_path).split('.')[-1]
-            
-            # Get the appropriate parser
-            parser = ParserFactory.create_parser(ext)
-            
-            # Parse the file and add results to the graph
-            nodes, relations = parser.parse_file(str(file_path))
-            
-            for node in nodes:
-                graph.add_node(node)
-            
-            for relation in relations:
-                graph.add_relation(relation)
-            
-            file_count += 1
-            if file_count % 100 == 0:
-                logger.info(f"Processed {file_count} files...")
-                
-        except Exception as e:
-            logger.warning(f"Failed to parse {file_path}: {str(e)}")
-    
-    logger.info(f"Processed {file_count} files. Final graph has {len(graph.nodes)} nodes and {len(graph.relations)} relations.")
-    
-    # Create the storage directory if it doesn't exist
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Save the graph
-    store = GraphStore(str(output_path.parent))
-    store.save(graph, output_path.name, "pickle")
-    
-    logger.info(f"Graph saved to {args.output}")
+# ═══════════════════════════════════════════════════════════════
+#  build 命令
+# ═══════════════════════════════════════════════════════════════
+def cmd_build(args) -> None:
+    project_path = os.path.abspath(args.project_path)
+    output_path  = args.output
+    json_path    = args.export_json
+    show_progress = not args.no_progress
 
+    logger.info(f"[BUILD] 项目路径: {project_path}")
 
-def query_graph(args):
-    """
-    Query the knowledge graph.
-    
-    Args:
-        args: Parsed command line arguments
-    """
-    logger = get_logger(__name__)
-    logger.info(f"Querying graph with question: {args.question}")
-    
-    # Load the graph
-    graph_path = Path(args.graph_path)
-    store = GraphStore(str(graph_path.parent))
-    graph = store.load(graph_path.name, args.format)
-    
-    logger.info(f"Loaded graph with {len(graph.nodes)} nodes and {len(graph.relations)} relations.")
-    
-    # Create OpenAI client and generate response
-    client = OpenAIClient()
-    
-    try:
-        # For now, just print the question and some graph stats
-        # In a real implementation, we would use the client to generate a response
-        print(f"Question: {args.question}")
-        print(f"Graph has {len(graph.nodes)} nodes and {len(graph.relations)} relations.")
-        print(f"The graph contains:")
-        print(f"- {len([n for n in graph.nodes.values() if n.type.value == 'FILE'])} files")
-        print(f"- {len([n for n in graph.nodes.values() if n.type.value == 'CLASS'])} classes")
-        print(f"- {len([n for n in graph.nodes.values() if n.type.value == 'FUNCTION'])} functions")
-        
-        # Generate a grep command suggestion
-        grep_cmd = client.generate_grep_command(graph, args.question)
-        print(f"\nSuggested grep command: {grep_cmd}")
-        
-    except Exception as e:
-        logger.error(f"Error querying graph: {str(e)}")
-
-
-def export_graph(args):
-    """
-    Export the knowledge graph in a different format.
-    
-    Args:
-        args: Parsed command line arguments
-    """
-    logger = get_logger(__name__)
-    logger.info(f"Exporting graph from {args.input_path} to {args.output_path} in {args.format} format")
-    
-    # Load the graph in its current format
-    input_path = Path(args.input_path)
-    input_store = GraphStore(str(input_path.parent))
-    
-    # Determine input format from file extension if not specified
-    input_format = "pickle"  # default
-    if input_path.suffix == ".json":
-        input_format = "json"
-    
-    graph = input_store.load(input_path.name, input_format)
-    
-    # Save in the requested format
-    output_path = Path(args.output_path)
-    output_store = GraphStore(str(output_path.parent))
-    
-    output_store.save(graph, output_path.name, args.format)
-    
-    logger.info("Export completed successfully")
-
-
-def update_graph(args):
-    """
-    Incrementally update the knowledge graph.
-    
-    Args:
-        args: Parsed command line arguments
-    """
-    logger = get_logger(__name__)
-    logger.info(f"Updating graph for project: {args.project_path}")
-    
-    # Load the existing graph if it exists
-    graph_path = Path(args.graph_path)
-    store = GraphStore(str(graph_path.parent))
-    
-    if store.exists(graph_path.name):
-        graph = store.load(graph_path.name, "pickle")  # assume pickle for updates
-        logger.info(f"Loaded existing graph with {len(graph.nodes)} nodes and {len(graph.relations)} relations.")
-    else:
-        graph = KnowledgeGraph()
-        logger.info("Created new graph.")
-    
-    # Create the incremental updater
-    updater = IncrementalUpdater(graph)
-    
-    # Update the graph
-    updater.update_graph(args.project_path, args.exclude)
-    
-    # Save the updated graph
-    store.save(graph, graph_path.name, "pickle")
-    
-    logger.info(f"Updated graph saved to {args.graph_path}. Now has {len(graph.nodes)} nodes and {len(graph.relations)} relations.")
-
-
-def main():
-    """
-    Main function to parse arguments and dispatch to appropriate handler.
-    """
-    # Set up logging
-    from utils.logger import setup_logger
-    setup_logger()
-    
-    # Parse arguments
-    args = parse_args()
-    
-    # Dispatch based on the command
-    if args.command == 'build':
-        build_graph(args)
-    elif args.command == 'query':
-        query_graph(args)
-    elif args.command == 'export':
-        export_graph(args)
-    elif args.command == 'update':
-        update_graph(args)
-    else:
-        print("Please specify a command: build, query, export, or update")
+    # 1. 收集目标文件
+    suffixes    = ParserFactory.supported_suffixes()
+    code_files  = walk_project(project_path, suffixes)
+    if not code_files:
+        logger.error("未找到任何支持的代码文件，请检查项目路径或扩展解析器注册")
         sys.exit(1)
+
+    # 2. 初始化图谱
+    graph = KnowledgeGraph(project_root=project_path)
+
+    # 3. 逐文件解析
+    iterator = tqdm(code_files, desc="解析文件", unit="file") if show_progress else code_files
+    for file_path in iterator:
+        content = read_file(file_path)
+        if not content:
+            logger.warning(f"跳过空文件: {file_path}")
+            continue
+
+        suffix = os.path.splitext(file_path)[1]
+        try:
+            parser = ParserFactory.get(suffix)
+        except ValueError:
+            logger.debug(f"无对应解析器，跳过: {file_path}")
+            continue
+
+        nodes, relations = parser.parse_file(file_path, content)
+        if not nodes:
+            continue
+
+        graph.add_nodes(nodes)
+        graph.add_relations(relations)
+
+    # 4. 保存
+    store = GraphStore(output_path)
+    store.save(graph)
+
+    if json_path:
+        store.save_json(graph, json_path)
+
+    print(f"\n✅  图谱构建完成")
+    print(graph.summary())
+    print(f"\n📦  已保存至: {output_path}")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  query 命令
+# ═══════════════════════════════════════════════════════════════
+def cmd_query(args) -> None:
+    question   = args.question
+    graph_path = args.graph_path
+    gen_cmd    = args.gen_cmd
+    top_n      = args.top_n
+
+    logger.info(f"[QUERY] 问题: {question}")
+
+    # 1. 加载图谱
+    store = GraphStore(graph_path)
+    try:
+        graph = store.load(graph_path)
+    except FileNotFoundError:
+        logger.error(f"图谱文件不存在: {graph_path}，请先运行 build 命令")
+        sys.exit(1)
+
+    # 2. 节点模糊匹配
+    matched = graph.get_nodes_by_name(question, fuzzy=True)[:top_n]
+    if matched:
+        print(f"\n🔍  匹配到 {len(matched)} 个节点（最多显示 {top_n}）\n")
+        for node in matched:
+            _print_node(node)
+    else:
+        print("\n⚠️   未找到直接匹配的节点")
+
+    # 3. 生成 bash/grep 指令
+    if gen_cmd:
+        if not settings.OPENAI_API_KEY:
+            logger.error("未配置 OPENAI_API_KEY，无法生成 bash 指令")
+            sys.exit(1)
+
+        from llm.client import LLMClient
+        try:
+            client = LLMClient()
+            result = client.generate_grep_command(graph, question)
+            print("\n" + "═" * 60)
+            print("🛠️   生成的定位指令")
+            print("═" * 60)
+            print(result)
+            print("═" * 60)
+        except Exception as e:
+            logger.error(f"LLM 调用失败: {e}")
+            sys.exit(1)
+
+
+# ─────────────────────────────────────────────────────────────
+def _print_node(node) -> None:
+    """格式化打印单个节点"""
+    type_label = node.node_type.value.upper()
+    print(f"  [{type_label}] {node.name}")
+    print(f"    路径  : {node.abs_path}")
+    if hasattr(node, "start_line"):
+        print(f"    行号  : {node.start_line} – {node.end_line}")
+    if hasattr(node, "params"):
+        print(f"    参数  : {node.params}")
+    if hasattr(node, "docstring") and node.docstring:
+        snippet = node.docstring[:120].replace("\n", " ")
+        print(f"    文档  : {snippet}")
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Dispatch
+# ═══════════════════════════════════════════════════════════════
+def main() -> None:
+    args = parse_args()
+    if args.command == "build":
+        cmd_build(args)
+    elif args.command == "query":
+        cmd_query(args)
 
 
 if __name__ == "__main__":

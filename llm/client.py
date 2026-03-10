@@ -1,125 +1,92 @@
-"""
-OpenAI client for generating grep commands based on the knowledge graph.
-"""
+# llm/client.py
+# ── OpenAI 客户端封装 ─────────────────────────────────────────────────
+from __future__ import annotations
 
-import openai
-from typing import Dict, Any
-from ..config.settings import settings
-from ..core.graph.knowledge_graph import KnowledgeGraph
+from openai import OpenAI
+
+from config.settings import settings
+from core.graph.knowledge_graph import KnowledgeGraph
+from llm.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
+from schema.enums import NodeType
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
-class OpenAIClient:
+class LLMClient:
     """
-    Client for interacting with OpenAI API to generate grep commands based on the knowledge graph.
+    封装 OpenAI Chat API，提供：
+    - generate_grep_command(graph, question) → bash 指令字符串
     """
-    
-    def __init__(self):
-        """
-        Initialize the OpenAI client with API key from settings.
-        """
-        openai.api_key = settings.OPENAI_API_KEY
-    
-    def generate_grep_command(self, graph: KnowledgeGraph, question: str) -> str:
-        """
-        Generate a grep command based on the knowledge graph and user question.
-        
-        Args:
-            graph: KnowledgeGraph instance containing codebase information
-            question: Natural language question about the codebase
-            
-        Returns:
-            A grep command string that would help answer the question
-        """
-        # For now, we'll return a placeholder implementation
-        # In a real implementation, we would use the graph and question
-        # to generate a relevant grep command
-        
-        # Example of how we might use the graph:
-        # 1. Analyze the question to determine what kind of search is needed
-        # 2. Use the graph to identify relevant files/directories
-        # 3. Construct an appropriate grep command
-        
-        # Placeholder implementation:
-        prompt = f"""
-        Given the following question about a codebase: "{question}"
-        
-        And the following information about the codebase structure:
-        - Number of files: {len([n for n in graph.nodes.values() if n.type.value == 'FILE'])}
-        - Number of classes: {len([n for n in graph.nodes.values() if n.type.value == 'CLASS'])}
-        - Number of functions: {len([n for n in graph.nodes.values() if n.type.value == 'FUNCTION'])}
-        
-        Generate an appropriate grep command to find relevant code for this question.
-        Return only the grep command without any explanation.
-        """
-        
-        try:
-            response = openai.ChatCompletion.create(
-                model=settings.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that generates grep commands to search codebases."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=100,
-                temperature=0.1
-            )
-            
-            command = response.choices[0].message.content.strip()
-            # Basic validation to ensure we got a grep command
-            if command.startswith("grep ") or "grep" in command:
-                return command
-            else:
-                # If we didn't get a grep command, return a generic one
-                return f"grep -r '{question}' . --include='*.py'"
-                
-        except Exception as e:
-            # If there's an error, return a generic grep command
-            return f"grep -r '{question}' . --include='*.py'"
-    
-    def generate_code_explanation(self, graph: KnowledgeGraph, code_elements: list) -> str:
-        """
-        Generate explanations for specific code elements based on the knowledge graph.
-        
-        Args:
-            graph: KnowledgeGraph instance containing codebase information
-            code_elements: List of code element IDs to explain
-            
-        Returns:
-            Explanation of the code elements and their relationships
-        """
-        # Extract information about the requested elements from the graph
-        element_details = []
-        for elem_id in code_elements:
-            node = graph.get_node(elem_id)
-            if node:
-                neighbors = graph.get_neighbors(elem_id)
-                element_details.append({
-                    'id': node.id,
-                    'name': node.name,
-                    'type': node.type.value,
-                    'neighbors': [(n.name, n.type.value) for n in neighbors]
-                })
-        
-        # Create a prompt for the LLM
-        prompt = f"""
-        Explain the following code elements and their relationships:
 
-        {element_details}
-
-        Describe their purpose, functionality, and how they interact with other components.
-        """
-        
-        try:
-            response = openai.ChatCompletion.create(
-                model=settings.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that explains code structure and relationships."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=500,
-                temperature=0.3
+    def __init__(self) -> None:
+        if not settings.OPENAI_API_KEY:
+            raise ValueError(
+                "OPENAI_API_KEY 未配置，请在 .env 文件中设置 OPENAI_API_KEY"
             )
-            
-            return response.choices[0].message.content.strip()
-            
+        self._client = OpenAI(
+            api_key=settings.OPENAI_API_KEY,
+            base_url=settings.OPENAI_BASE_URL,
+        )
+        self.model       = settings.OPENAI_MODEL
+        self.temperature = settings.OPENAI_TEMPERATURE
+
+    # ── 图谱摘要：精简 token，保留核心定位信息 ──────
+    @staticmethod
+    def _build_graph_summary(graph: KnowledgeGraph, max_items: int = 400) -> str:
+        """
+        将图谱压缩为 LLM 可用的纯文本摘要。
+        只保留 class / function 节点，包含路径、行号、docstring 摘要。
+        """
+        lines: list[str] = []
+        for node in list(graph._node_map.values())[:max_items]:
+            if node.node_type == NodeType.CLASS:
+                doc = (node.docstring[:60] + "…") if node.docstring else ""  # type: ignore
+                lines.append(
+                    f"[CLASS] {node.name} | {node.abs_path}:{node.start_line}-{node.end_line}"  # type: ignore
+                    + (f" | {doc}" if doc else "")
+                )
+            elif node.node_type == NodeType.FUNCTION:
+                doc = (node.docstring[:60] + "…") if node.docstring else ""  # type: ignore
+                lines.append(
+                    f"[FUNC]  {node.name}{node.params} | {node.abs_path}:{node.start_line}-{node.end_line}"  # type: ignore
+                    + (f" | {doc}" if doc else "")
+                )
+        return "\n".join(lines) if lines else "（图谱为空）"
+
+    # ── 主接口 ────────────────────────────────────────
+    def generate_grep_command(
+        self,
+        graph: KnowledgeGraph,
+        question: str,
+    ) -> str:
+        """
+        基于图谱摘要 + 用户问题，让 LLM 生成 bash/grep 定位指令。
+
+        :param graph:    已构建的 KnowledgeGraph
+        :param question: 用户自然语言问题
+        :return:         LLM 返回的指令文本
+        """
+        summary = self._build_graph_summary(graph)
+        user_prompt = USER_PROMPT_TEMPLATE.format(
+            project_root=graph.project_root,
+            graph_summary=summary,
+            question=question,
+        )
+
+        logger.info(f"调用 LLM 生成指令 | 模型: {self.model} | 问题: {question[:80]}")
+        try:
+            response = self._client.chat.completions.create(
+                model=self.model,
+                temperature=self.temperature,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_prompt},
+                ],
+            )
+            result = response.choices[0].message.content or ""
+            logger.info("LLM 指令生成完成")
+            return result.strip()
         except Exception as e:
-            return f"Could not generate explanation: {str(e)}"
+            logger.error(f"LLM 调用失败: {e}")
+            raise

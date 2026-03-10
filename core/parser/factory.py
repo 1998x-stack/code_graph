@@ -1,60 +1,68 @@
-"""
-Parser factory for registering and retrieving parsers by file extension.
-"""
+# core/parser/factory.py
+# ── 可插拔解析器工厂 ──────────────────────────────────────────────────
+# 开闭原则：新增语言只需实现 BaseParser + 调用 register()，工厂代码不动。
+from __future__ import annotations
 
-from typing import Dict, Type
-from .base import BaseParser
+from typing import Type
+
+from core.parser.base import BaseParser
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ParserFactory:
     """
-    Factory class for managing parsers by file extension.
+    解析器工厂。
+    注册示例：
+        ParserFactory.register(PythonParser)
+    获取示例：
+        parser = ParserFactory.get(".py")
     """
-    
-    _parsers: Dict[str, Type[BaseParser]] = {}
-    
+
+    _registry: dict[str, Type[BaseParser]] = {}
+
+    # ── 注册 ─────────────────────────────────────────
     @classmethod
-    def register(cls, extension: str, parser_cls: Type[BaseParser]):
-        """
-        Register a parser for a specific file extension.
-        
-        Args:
-            extension: File extension (e.g., '.py', '.js', '.ts')
-            parser_cls: Parser class to register
-        """
-        cls._parsers[extension.lower()] = parser_cls
-    
+    def register(cls, parser_cls: Type[BaseParser]) -> None:
+        """注册解析器类；同一后缀重复注册会覆盖并警告"""
+        instance = parser_cls()
+        for suffix in instance.supported_suffixes:
+            if suffix in cls._registry:
+                logger.warning(
+                    f"后缀 {suffix!r} 解析器已存在，将覆盖: "
+                    f"{cls._registry[suffix].__name__} → {parser_cls.__name__}"
+                )
+            cls._registry[suffix] = parser_cls
+            logger.debug(f"注册解析器: {parser_cls.__name__} ← {suffix}")
+
+    # ── 获取 ─────────────────────────────────────────
     @classmethod
-    def get_parser(cls, extension: str) -> Type[BaseParser]:
+    def get(cls, suffix: str) -> BaseParser:
         """
-        Get a parser for the specified file extension.
-        
-        Args:
-            extension: File extension (e.g., '.py', '.js', '.ts')
-            
-        Returns:
-            Parser class for the extension, or None if not registered
+        按文件后缀返回解析器实例。
+        :raises ValueError: 未注册该后缀时抛出
         """
-        return cls._parsers.get(extension.lower())
-    
+        parser_cls = cls._registry.get(suffix)
+        if parser_cls is None:
+            raise ValueError(
+                f"没有注册支持后缀 {suffix!r} 的解析器。"
+                f"已注册: {list(cls._registry.keys())}"
+            )
+        return parser_cls()
+
+    # ── 查询 ─────────────────────────────────────────
     @classmethod
-    def create_parser(cls, extension: str) -> BaseParser:
-        """
-        Create an instance of the parser for the specified file extension.
-        
-        Args:
-            extension: File extension (e.g., '.py', '.js', '.ts')
-            
-        Returns:
-            Instance of the parser for the extension
-        """
-        parser_cls = cls.get_parser(extension)
-        if parser_cls:
-            return parser_cls()
-        else:
-            raise ValueError(f"No parser registered for extension: {extension}")
+    def supported_suffixes(cls) -> list[str]:
+        """返回所有已注册的文件后缀"""
+        return list(cls._registry.keys())
+
+    @classmethod
+    def is_supported(cls, suffix: str) -> bool:
+        return suffix in cls._registry
 
 
-# Register default parsers
-from .python_parser import PythonParser
-ParserFactory.register('.py', PythonParser)
+# ── 默认注册 Python 解析器 ───────────────────────────
+# 其他语言解析器在此追加 register() 调用即可
+from core.parser.python_parser import PythonParser  # noqa: E402
+ParserFactory.register(PythonParser)

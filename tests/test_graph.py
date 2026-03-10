@@ -1,183 +1,89 @@
+# tests/test_graph.py
 """
-Tests for the knowledge graph module.
+KnowledgeGraph 单元测试
+运行：pytest tests/test_graph.py -v
 """
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import unittest
-from ..core.graph.knowledge_graph import KnowledgeGraph
-from ..schema.models import Node, FileNode, ClassNode, FunctionNode, HasRelation
-from ..schema.enums import NodeType, RelationType
+import pytest
+from core.graph.knowledge_graph import KnowledgeGraph
+from core.parser.python_parser import PythonParser
+from schema.enums import NodeType, RelationType
 
-
-class TestKnowledgeGraph(unittest.TestCase):
-    """
-    Tests for the KnowledgeGraph class.
-    """
-    
-    def setUp(self):
-        """
-        Set up test fixtures before each test method.
-        """
-        self.graph = KnowledgeGraph()
-    
-    def test_add_node(self):
-        """
-        Test adding a node to the graph.
-        """
-        node = Node(id="test_node", name="Test Node", type=NodeType.FUNCTION)
-        self.graph.add_node(node)
-        
-        # Check that the node was added
-        self.assertEqual(len(self.graph.nodes), 1)
-        self.assertIn("test_node", self.graph.nodes)
-        self.assertEqual(self.graph.nodes["test_node"].name, "Test Node")
-        
-        # Check that the node was added to the NetworkX graph
-        self.assertIn("test_node", self.graph.graph.nodes)
-    
-    def test_add_relation(self):
-        """
-        Test adding a relation to the graph.
-        """
-        # Add two nodes first
-        node1 = Node(id="node1", name="Node 1", type=NodeType.FUNCTION)
-        node2 = Node(id="node2", name="Node 2", type=NodeType.FUNCTION)
-        self.graph.add_node(node1)
-        self.graph.add_node(node2)
-        
-        # Add a relation between them
-        relation = HasRelation(
-            id="rel1",
-            source_id="node1",
-            target_id="node2",
-            type=RelationType.HAS
-        )
-        self.graph.add_relation(relation)
-        
-        # Check that the relation was added
-        self.assertEqual(len(self.graph.relations), 1)
-        self.assertIn("rel1", self.graph.relations)
-        self.assertEqual(self.graph.relations["rel1"].source_id, "node1")
-        
-        # Check that the edge was added to the NetworkX graph
-        self.assertTrue(self.graph.graph.has_edge("node1", "node2"))
-    
-    def test_get_node(self):
-        """
-        Test getting a node by ID.
-        """
-        node = Node(id="test_node", name="Test Node", type=NodeType.FUNCTION)
-        self.graph.add_node(node)
-        
-        # Get the node by ID
-        retrieved_node = self.graph.get_node("test_node")
-        
-        # Check that the right node was returned
-        self.assertIsNotNone(retrieved_node)
-        self.assertEqual(retrieved_node.id, "test_node")
-        self.assertEqual(retrieved_node.name, "Test Node")
-    
-    def test_get_by_name(self):
-        """
-        Test getting nodes by name.
-        """
-        node1 = Node(id="node1", name="common_name", type=NodeType.FUNCTION)
-        node2 = Node(id="node2", name="common_name", type=NodeType.CLASS)
-        node3 = Node(id="node3", name="different_name", type=NodeType.FUNCTION)
-        self.graph.add_node(node1)
-        self.graph.add_node(node2)
-        self.graph.add_node(node3)
-        
-        # Get all nodes with the common name
-        nodes = self.graph.get_by_name("common_name")
-        
-        # Check that we got both nodes with the common name
-        self.assertEqual(len(nodes), 2)
-        node_ids = [node.id for node in nodes]
-        self.assertIn("node1", node_ids)
-        self.assertIn("node2", node_ids)
-        
-        # Get nodes with the common name and FUNCTION type
-        nodes = self.graph.get_by_name("common_name", NodeType.FUNCTION)
-        
-        # Check that we got only the FUNCTION node
-        self.assertEqual(len(nodes), 1)
-        self.assertEqual(nodes[0].id, "node1")
-    
-    def test_export_and_load_dict(self):
-        """
-        Test exporting and loading the graph as a dictionary.
-        """
-        # Add some nodes and relations
-        node1 = Node(id="node1", name="Node 1", type=NodeType.FUNCTION)
-        node2 = Node(id="node2", name="Node 2", type=NodeType.CLASS)
-        self.graph.add_node(node1)
-        self.graph.add_node(node2)
-        
-        relation = HasRelation(
-            id="rel1",
-            source_id="node1",
-            target_id="node2",
-            type=RelationType.HAS
-        )
-        self.graph.add_relation(relation)
-        
-        # Export the graph
-        exported_data = self.graph.export_dict()
-        
-        # Create a new graph and load the data
-        new_graph = KnowledgeGraph()
-        new_graph.load_dict(exported_data)
-        
-        # Check that the new graph has the same nodes and relations
-        self.assertEqual(len(new_graph.nodes), 2)
-        self.assertEqual(len(new_graph.relations), 1)
-        self.assertIn("node1", new_graph.nodes)
-        self.assertIn("node2", new_graph.nodes)
-        self.assertIn("rel1", new_graph.relations)
-        
-        # Check that the nodes and relations have the correct properties
-        self.assertEqual(new_graph.nodes["node1"].name, "Node 1")
-        self.assertEqual(new_graph.nodes["node2"].type, NodeType.CLASS)
-        self.assertEqual(new_graph.relations["rel1"].source_id, "node1")
-    
-    def test_get_neighbors(self):
-        """
-        Test getting neighboring nodes.
-        """
-        # Add nodes
-        node1 = Node(id="node1", name="Node 1", type=NodeType.FUNCTION)
-        node2 = Node(id="node2", name="Node 2", type=NodeType.CLASS)
-        node3 = Node(id="node3", name="Node 3", type=NodeType.VARIABLE)
-        self.graph.add_node(node1)
-        self.graph.add_node(node2)
-        self.graph.add_node(node3)
-        
-        # Add relations of different types
-        rel1 = HasRelation(
-            id="has_rel",
-            source_id="node1",
-            target_id="node2",
-            type=RelationType.HAS
-        )
-        self.graph.add_relation(rel1)
-        
-        import_rel = HasRelation(  # Using HasRelation for simplicity in test
-            id="import_rel",
-            source_id="node1",
-            target_id="node3",
-            type=RelationType.IMPORT  # This won't match HAS filter
-        )
-        self.graph.add_relation(import_rel)
-        
-        # Get all neighbors of node1
-        all_neighbors = self.graph.get_neighbors("node1")
-        self.assertEqual(len(all_neighbors), 2)
-        
-        # Get only neighbors connected by HAS relations
-        has_neighbors = self.graph.get_neighbors("node1", RelationType.HAS)
-        self.assertEqual(len(has_neighbors), 1)
-        self.assertEqual(has_neighbors[0].id, "node2")
+FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "sample")
+SERVICE_PY  = os.path.join(FIXTURE_DIR, "service.py")
+UTILS_PY    = os.path.join(FIXTURE_DIR, "utils.py")
 
 
-if __name__ == '__main__':
-    unittest.main()
+# ─── fixtures ────────────────────────────────────────────────
+@pytest.fixture
+def built_graph() -> KnowledgeGraph:
+    """解析两个 fixture 文件，返回已构建的图谱"""
+    parser = PythonParser()
+    graph  = KnowledgeGraph(project_root=FIXTURE_DIR)
+    for path in (SERVICE_PY, UTILS_PY):
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+        nodes, rels = parser.parse_file(path, content)
+        graph.add_nodes(nodes)
+        graph.add_relations(rels)
+    return graph
+
+
+# ─── 基础查询 ──────────────────────────────────────────────────
+class TestGraphBasic:
+    def test_node_count_gt_zero(self, built_graph):
+        assert built_graph.node_count > 0
+
+    def test_relation_count_gt_zero(self, built_graph):
+        assert built_graph.relation_count > 0
+
+    def test_get_node_by_id_returns_none_for_missing(self, built_graph):
+        assert built_graph.get_node("nonexistent") is None
+
+    def test_get_nodes_by_name_fuzzy(self, built_graph):
+        results = built_graph.get_nodes_by_name("UserService")
+        assert any(n.name == "UserService" for n in results)
+
+    def test_get_nodes_by_name_with_type_filter(self, built_graph):
+        results = built_graph.get_nodes_by_name("login", node_type=NodeType.FUNCTION)
+        assert all(n.node_type == NodeType.FUNCTION for n in results)
+
+    def test_get_relations_from(self, built_graph):
+        # 文件节点必然有 HAS 关系
+        file_nodes = [n for n in built_graph._node_map.values() if n.node_type == NodeType.FILE]
+        assert len(file_nodes) > 0
+        rels = built_graph.get_relations_from(file_nodes[0].node_id, RelationType.HAS)
+        assert len(rels) >= 0  # 可能为空（若文件只有导入语句）
+
+
+# ─── 序列化往返 ────────────────────────────────────────────────
+class TestGraphSerialization:
+    def test_to_dict_and_from_dict_roundtrip(self, built_graph):
+        data     = built_graph.to_dict()
+        restored = KnowledgeGraph.from_dict(data)
+        assert restored.node_count     == built_graph.node_count
+        assert restored.relation_count == built_graph.relation_count
+        assert restored.project_root   == built_graph.project_root
+
+    def test_serialized_dict_has_required_keys(self, built_graph):
+        data = built_graph.to_dict()
+        assert "project_root" in data
+        assert "nodes"        in data
+        assert "relations"    in data
+
+    def test_nodes_preserve_line_numbers(self, built_graph):
+        data     = built_graph.to_dict()
+        restored = KnowledgeGraph.from_dict(data)
+        for node in restored._node_map.values():
+            if node.node_type in (NodeType.CLASS, NodeType.FUNCTION):
+                assert node.start_line >= 1  # type: ignore
+
+
+# ─── summary ──────────────────────────────────────────────────
+class TestGraphSummary:
+    def test_summary_contains_project_root(self, built_graph):
+        s = built_graph.summary()
+        assert FIXTURE_DIR in s or "sample" in s

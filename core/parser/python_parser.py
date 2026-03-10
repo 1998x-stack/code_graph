@@ -1,296 +1,237 @@
-"""
-Python parser implementation using the AST module.
-"""
+# core/parser/python_parser.py
+# ── Python AST 解析器 ────────────────────────────────────────────────
+# 提取：FileNode / ClassNode / FunctionNode
+#        HAS / IMPORT / CALL 关系
+from __future__ import annotations
 
 import ast
-from typing import Tuple, List, Dict, Set
-from .base import BaseParser
-from ...schema.models import (
-    Node, Relation, FileNode, ClassNode, FunctionNode, 
-    HasRelation, ImportRelation, CallRelation
+import os
+from typing import Optional
+
+from core.parser.base import BaseParser
+from schema.enums import RelationType
+from schema.models import (
+    AnyNode, AnyRelation,
+    FileNode, ClassNode, FunctionNode,
+    HasRelation, ImportRelation, CallRelation,
 )
-from ...schema.enums import NodeType, RelationType
-from ...utils.id_gen import (
-    generate_file_id, generate_class_id, generate_function_id
-)
+from utils.file_utils import file_md5
+from utils.id_gen import file_id, class_id, func_id, relation_id
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class PythonParser(BaseParser):
-    """
-    Parser for Python files using the AST module.
-    Extracts imports, classes, methods, and call sites.
-    """
-    
-    def parse_file(self, file_path: str) -> Tuple[List[Node], List[Relation]]:
-        """
-        Parse a Python file and return a list of nodes and relations.
-        
-        Args:
-            file_path: Path to the Python file to parse
-            
-        Returns:
-            A tuple containing:
-            - List of nodes extracted from the file
-            - List of relations between the nodes
-        """
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-            
+    """基于标准库 ast 的 Python 解析器，支持 Python 3.8+"""
+
+    @property
+    def supported_suffixes(self) -> list[str]:
+        return [".py"]
+
+    # ─────────────────────────────────────────────────
+    def parse_file(
+        self,
+        file_abs_path: str,
+        file_content: str,
+    ) -> tuple[list[AnyNode], list[AnyRelation]]:
+
+        path = os.path.abspath(file_abs_path)
+        nodes:     list[AnyNode]     = []
+        relations: list[AnyRelation] = []
+
+        # ── 解析 AST ─────────────────────────────────
         try:
-            tree = ast.parse(content)
-        except SyntaxError:
-            # If the file has syntax errors, return empty lists
+            tree = ast.parse(file_content, filename=path)
+        except SyntaxError as e:
+            logger.warning(f"AST 解析失败 {path}: {e}")
             return [], []
-        
-        # Initialize lists to store nodes and relations
-        nodes: List[Node] = []
-        relations: List[Relation] = []
-        
-        # Create a file node
-        file_id = generate_file_id(file_path)
-        file_node = FileNode(
-            id=file_id,
-            name=file_path.split('/')[-1],
-            type=NodeType.FILE,
-            path=file_path,
-            language='python'
+
+        # ── 1. 文件节点 ───────────────────────────────
+        fid = file_id(path)
+        f_node = FileNode(
+            node_id=fid,
+            name=os.path.basename(path),
+            abs_path=path,
+            file_suffix=".py",
+            file_md5=file_md5(path),
+            line_count=file_content.count("\n") + 1,
         )
-        nodes.append(file_node)
-        
-        # Track imports to connect to other elements
-        imports: Dict[str, str] = {}  # Maps imported name to module
-        import_nodes: List[Node] = []
-        import_relations: List[Relation] = []
-        
-        # Process AST nodes
+        nodes.append(f_node)
+
+        # ── 2. Import 语句 → ImportRelation ───────────
+        # import_map: 本地名 → 目标字符串（用于 CALL 精准匹配）
+        import_map: dict[str, str] = {}
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    module_name = alias.name
-                    imported_as = alias.asname or alias.name
-                    
-                    # Store import mapping
-                    imports[imported_as] = module_name
-                    
-                    # Create import node
-                    import_node = Node(
-                        id=f"import::{file_path}::{imported_as}",
-                        name=imported_as,
-                        type=NodeType.MODULE,
-                        path=file_path,
-                        properties={'module': module_name}
+                    local = alias.asname or alias.name
+                    import_map[local] = alias.name
+                    rel = ImportRelation(
+                        relation_id=relation_id(fid, RelationType.IMPORT, alias.name),
+                        source_id=fid,
+                        target_id=alias.name,       # 模块路径字符串
+                        import_alias=alias.asname,
+                        imported_name=alias.name,
                     )
-                    import_nodes.append(import_node)
-                    
-                    # Create relation from file to import
-                    import_rel = ImportRelation(
-                        id=f"import_rel::{file_node.id}::{import_node.id}",
-                        source_id=file_node.id,
-                        target_id=import_node.id,
-                        properties={'module': module_name}
-                    )
-                    import_relations.append(import_rel)
-                    
+                    relations.append(rel)
+
             elif isinstance(node, ast.ImportFrom):
-                module_name = node.module or ''
+                module = node.module or ""
                 for alias in node.names:
-                    imported_name = alias.name
-                    imported_as = alias.asname or imported_name
-                    
-                    # Store import mapping
-                    full_import_name = f"{module_name}.{imported_name}"
-                    imports[imported_as] = full_import_name
-                    
-                    # Create import node
-                    import_node = Node(
-                        id=f"import::{file_path}::{imported_as}",
-                        name=imported_as,
-                        type=NodeType.MODULE,
-                        path=file_path,
-                        properties={'module': full_import_name}
+                    local = alias.asname or alias.name
+                    full  = f"{module}.{alias.name}" if module else alias.name
+                    import_map[local] = full
+                    rel = ImportRelation(
+                        relation_id=relation_id(fid, RelationType.IMPORT, full),
+                        source_id=fid,
+                        target_id=full,
+                        import_alias=alias.asname,
+                        imported_name=alias.name,
                     )
-                    import_nodes.append(import_node)
-                    
-                    # Create relation from file to import
-                    import_rel = ImportRelation(
-                        id=f"import_rel::{file_node.id}::{import_node.id}",
-                        source_id=file_node.id,
-                        target_id=import_node.id,
-                        properties={'module': full_import_name}
-                    )
-                    import_relations.append(import_rel)
-                    
-            elif isinstance(node, ast.ClassDef):
-                class_id = generate_class_id(file_path, node.name)
-                
-                # Create class node
-                class_node = ClassNode(
-                    id=class_id,
-                    name=node.name,
-                    type=NodeType.CLASS,
-                    path=file_path,
-                    methods=[]
+                    relations.append(rel)
+
+        # ── 3. 顶级类 & 函数 ──────────────────────────
+        for stmt in tree.body:
+            if isinstance(stmt, ast.ClassDef):
+                cls_node, cls_rels = self._parse_class(
+                    stmt, path, fid, import_map
                 )
-                nodes.append(class_node)
-                
-                # Create relation from file to class
-                has_rel = HasRelation(
-                    id=f"has_rel::{file_node.id}::{class_node.id}",
-                    source_id=file_file.id,
-                    target_id=class_node.id,
-                    properties={}
+                nodes.append(cls_node)
+                relations.append(HasRelation(
+                    relation_id=relation_id(fid, RelationType.HAS, cls_node.node_id),
+                    source_id=fid,
+                    target_id=cls_node.node_id,
+                ))
+                nodes.extend(cls_rels[0])   # method nodes
+                relations.extend(cls_rels[1])
+
+            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                fn_node, fn_rels = self._parse_function(
+                    stmt, path, fid, import_map, class_name=None
                 )
-                relations.append(has_rel)
-                
-                # Process methods in the class
-                method_names = []
-                for item in node.body:
-                    if isinstance(item, ast.FunctionDef):
-                        method_names.append(item.name)
-                        
-                        # Create function node
-                        func_id = generate_function_id(file_path, node.name, item.name)
-                        func_node = FunctionNode(
-                            id=func_id,
-                            name=item.name,
-                            type=NodeType.FUNCTION,
-                            path=file_path,
-                            parameters=[],
-                            return_type=None
-                        )
-                        nodes.append(func_node)
-                        
-                        # Create relation from class to method
-                        method_rel = HasRelation(
-                            id=f"has_rel::{class_node.id}::{func_node.id}",
-                            source_id=class_node.id,
-                            target_id=func_node.id,
-                            properties={}
-                        )
-                        relations.append(method_rel)
-                        
-                        # Extract parameters
-                        params = []
-                        for arg in item.args.args:
-                            if arg.arg != 'self':  # Exclude 'self' parameter
-                                params.append(arg.arg)
-                        func_node.parameters = params
-                        
-                        # Look for calls within the function
-                        calls = self._extract_calls(item, file_path, func_id)
-                        for call_target in calls:
-                            # Create call relation
-                            call_rel = CallRelation(
-                                id=f"call_rel::{func_node.id}::{call_target}",
-                                source_id=func_node.id,
-                                target_id=call_target,
-                                properties={}
-                            )
-                            relations.append(call_rel)
-                
-                # Update class node with method names
-                class_node.methods = method_names
-                
-            elif isinstance(node, ast.FunctionDef):
-                # Skip if this function is inside a class (already processed)
-                if not any(isinstance(parent, ast.ClassDef) for parent in ast.walk(tree) 
-                          if hasattr(parent, 'body') and node in parent.body):
-                    func_id = generate_function_id(file_path, None, node.name)
-                    
-                    # Create function node
-                    func_node = FunctionNode(
-                        id=func_id,
-                        name=node.name,
-                        type=NodeType.FUNCTION,
-                        path=file_path,
-                        parameters=[],
-                        return_type=None
-                    )
-                    nodes.append(func_node)
-                    
-                    # Create relation from file to function
-                    has_rel = HasRelation(
-                        id=f"has_rel::{file_node.id}::{func_node.id}",
-                        source_id=file_node.id,
-                        target_id=func_node.id,
-                        properties={}
-                    )
-                    relations.append(has_rel)
-                    
-                    # Extract parameters
-                    params = []
-                    for arg in node.args.args:
-                        params.append(arg.arg)
-                    func_node.parameters = params
-                    
-                    # Look for calls within the function
-                    calls = self._extract_calls(node, file_path, func_id)
-                    for call_target in calls:
-                        # Create call relation
-                        call_rel = CallRelation(
-                            id=f"call_rel::{func_node.id}::{call_target}",
-                            source_id=func_node.id,
-                            target_id=call_target,
-                            properties={}
-                        )
-                        relations.append(call_rel)
-        
-        # Add all import nodes and relations
-        nodes.extend(import_nodes)
-        relations.extend(import_relations)
-        
+                nodes.append(fn_node)
+                relations.append(HasRelation(
+                    relation_id=relation_id(fid, RelationType.HAS, fn_node.node_id),
+                    source_id=fid,
+                    target_id=fn_node.node_id,
+                ))
+                relations.extend(fn_rels)
+
+        logger.debug(
+            f"解析完成 {os.path.basename(path)}: "
+            f"{len(nodes)} 节点, {len(relations)} 关系"
+        )
         return nodes, relations
-    
-    def _extract_calls(self, node: ast.AST, file_path: str, source_func_id: str) -> List[str]:
-        """
-        Extract function/method calls from an AST node.
-        
-        Args:
-            node: AST node to extract calls from
-            file_path: Path to the file being parsed
-            source_func_id: ID of the source function
-            
-        Returns:
-            List of target IDs for calls made in the node
-        """
-        calls = set()
-        
-        for child in ast.walk(node):
-            if isinstance(child, ast.Call):
-                # Extract the function being called
-                if isinstance(child.func, ast.Name):
-                    # Direct function call
-                    func_name = child.func.id
-                    # Check if this is an imported name
-                    if func_name in imports:
-                        # This is a call to an imported function
-                        target_id = f"import::{file_path}::{func_name}"
-                        calls.add(target_id)
-                    else:
-                        # This is a local function call - we'd need more context to resolve
-                        # For now, we'll add it as a potential local call
-                        local_func_id = generate_function_id(file_path, None, func_name)
-                        calls.add(local_func_id)
-                elif isinstance(child.func, ast.Attribute):
-                    # Method call or attribute access
-                    attr_name = child.func.attr
-                    value = child.func.value
-                    
-                    if isinstance(value, ast.Name):
-                        # Could be obj.method() or a module.function() call
-                        obj_name = value.id
-                        if obj_name in imports:
-                            # This is likely a call to an imported module function
-                            target_id = f"import::{file_path}::{obj_name}.{attr_name}"
-                            calls.add(target_id)
-                        else:
-                            # This could be a call to a local object method
-                            # For now, we'll represent it generically
-                            calls.add(f"method::{file_path}::{obj_name}::{attr_name}")
-                    elif isinstance(value, ast.Call):
-                        # Chained call like func()().method()
-                        # Extract the inner call target
-                        inner_calls = self._extract_calls(value, file_path, source_func_id)
-                        calls.update(inner_calls)
-        
-        return list(calls)
+
+    # ─────────────────────────────────────────────────
+    def _parse_class(
+        self,
+        node: ast.ClassDef,
+        file_path: str,
+        fid: str,
+        import_map: dict[str, str],
+    ) -> tuple[ClassNode, tuple[list[AnyNode], list[AnyRelation]]]:
+
+        cid = class_id(file_path, node.name)
+        super_classes = [
+            (b.id if isinstance(b, ast.Name) else ast.unparse(b))
+            for b in node.bases
+        ]
+        cls_node = ClassNode(
+            node_id=cid,
+            name=node.name,
+            abs_path=file_path,
+            docstring=ast.get_docstring(node) or "",
+            super_classes=super_classes,
+            start_line=node.lineno,
+            end_line=node.end_lineno or node.lineno,
+            file_node_id=fid,
+        )
+
+        method_nodes:     list[AnyNode]     = []
+        method_relations: list[AnyRelation] = []
+
+        for child in node.body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                fn_node, fn_rels = self._parse_function(
+                    child, file_path, fid, import_map, class_name=node.name
+                )
+                method_nodes.append(fn_node)
+                method_relations.append(HasRelation(
+                    relation_id=relation_id(cid, RelationType.HAS, fn_node.node_id),
+                    source_id=cid,
+                    target_id=fn_node.node_id,
+                ))
+                method_relations.extend(fn_rels)
+
+        return cls_node, (method_nodes, method_relations)
+
+    # ─────────────────────────────────────────────────
+    def _parse_function(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        file_path: str,
+        fid: str,
+        import_map: dict[str, str],
+        class_name: Optional[str],
+    ) -> tuple[FunctionNode, list[AnyRelation]]:
+
+        fnid = func_id(file_path, node.name, class_name)
+
+        # 参数签名
+        try:
+            params = ast.unparse(node.args)
+        except Exception:
+            params = "()"
+
+        # 返回值类型
+        return_type = "Any"
+        if node.returns:
+            try:
+                return_type = ast.unparse(node.returns)
+            except Exception:
+                pass
+
+        # 收集函数体内所有调用名（用于 CALL 关系）
+        called_names: list[str] = []
+        call_relations: list[AnyRelation] = []
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                call_name = _extract_call_name(sub.func)
+                if call_name:
+                    called_names.append(call_name)
+                    # 目标尽量精准：先查 import_map，否则保留原始名
+                    target = import_map.get(call_name, call_name)
+                    call_relations.append(CallRelation(
+                        relation_id=relation_id(fnid, RelationType.CALL, f"{target}:{sub.lineno}"),
+                        source_id=fnid,
+                        target_id=target,
+                        call_line=sub.lineno,
+                    ))
+
+        fn_node = FunctionNode(
+            node_id=fnid,
+            name=node.name,
+            abs_path=file_path,
+            docstring=ast.get_docstring(node) or "",
+            params=params,
+            return_type=return_type,
+            is_method=class_name is not None,
+            class_node_id=class_id(file_path, class_name) if class_name else None,
+            file_node_id=fid,
+            start_line=node.lineno,
+            end_line=node.end_lineno or node.lineno,
+            called_names=called_names,
+        )
+        return fn_node, call_relations
+
+
+# ── 辅助：从 ast.Call.func 提取可读调用名 ────────────────
+def _extract_call_name(func_node: ast.expr) -> str:
+    """提取被调用名称：Name → 'func_name'，Attribute → 'method_name'"""
+    if isinstance(func_node, ast.Name):
+        return func_node.id
+    if isinstance(func_node, ast.Attribute):
+        return func_node.attr
+    return ""

@@ -1,166 +1,130 @@
-"""
-Incremental updater for the knowledge graph.
-"""
+# core/incremental/updater.py
+# ── 增量更新器（接口完整，实现体为 TODO） ─────────────────────────────
+# 设计契约：外部调用方只依赖此接口，实现随时填充，不影响其他模块。
+from __future__ import annotations
 
-from typing import Dict, List, Set
-from ...utils.file_utils import calculate_md5, walk_project
-from ...core.graph.knowledge_graph import KnowledgeGraph
-from ...core.parser.factory import ParserFactory
-from ...schema.models import Node, Relation
+import os
+from typing import Optional
+
+from core.graph.knowledge_graph import KnowledgeGraph
+from core.parser.factory import ParserFactory
+from schema.enums import NodeType
+from utils.file_utils import walk_project, read_file, file_md5
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+# ──────────────────────────────────────────────────────────────────────
+# 数据类：文件变更快照
+# ──────────────────────────────────────────────────────────────────────
+class FileChanges:
+    """描述一次增量检查的结果"""
+    def __init__(
+        self,
+        added:    list[str],
+        modified: list[str],
+        deleted:  list[str],
+    ) -> None:
+        self.added    = added
+        self.modified = modified
+        self.deleted  = deleted
+
+    def __repr__(self) -> str:
+        return (
+            f"FileChanges("
+            f"added={len(self.added)}, "
+            f"modified={len(self.modified)}, "
+            f"deleted={len(self.deleted)})"
+        )
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.added or self.modified or self.deleted)
 
 
+# ──────────────────────────────────────────────────────────────────────
 class IncrementalUpdater:
     """
-    Handles incremental updates to the knowledge graph based on file changes.
+    增量更新器。
+
+    工作流：
+    1. check_changes(project_root) → FileChanges
+    2. apply_changes(graph, changes)
+
+    当前状态：接口已定义，实现体为 TODO。
+    MD5 缓存来源：图谱中 FileNode.file_md5 字段。
     """
-    
-    def __init__(self, graph: KnowledgeGraph):
-        """
-        Initialize the incremental updater with a knowledge graph.
-        
-        Args:
-            graph: The knowledge graph to update
-        """
+
+    def __init__(self, graph: KnowledgeGraph) -> None:
         self.graph = graph
-        self.file_hashes: Dict[str, str] = {}
-    
-    def check_changes(self, project_root: str, exclude_patterns: List[str] = None) -> Dict[str, str]:
+        # file_path → md5（启动时从图谱初始化）
+        self._md5_cache: dict[str, str] = self._init_cache(graph)
+
+    # ── 初始化 MD5 缓存 ───────────────────────────
+    @staticmethod
+    def _init_cache(graph: KnowledgeGraph) -> dict[str, str]:
+        cache: dict[str, str] = {}
+        for node in graph._node_map.values():
+            if node.node_type == NodeType.FILE:
+                cache[node.abs_path] = node.file_md5  # type: ignore[attr-defined]
+        logger.debug(f"MD5 缓存初始化完成，共 {len(cache)} 个文件")
+        return cache
+
+    # ─────────────────────────────────────────────
+    def check_changes(self, project_root: str) -> FileChanges:
         """
-        Check for changes in the project files by comparing MD5 hashes.
-        
-        Args:
-            project_root: Root directory of the project
-            exclude_patterns: List of patterns to exclude from the scan
-            
-        Returns:
-            Dictionary mapping file paths to change types ('added', 'modified', 'deleted')
+        对比现有图谱 MD5 缓存与磁盘，返回新增 / 修改 / 删除文件列表。
+        TODO: 当前返回空变更，待实现。
         """
-        current_files = set()
-        changes = {}
-        
-        # Get all current files in the project
-        for file_path in walk_project(project_root, exclude_patterns):
-            current_files.add(str(file_path))
-            file_str = str(file_path)
-            
-            # Calculate current hash
-            current_hash = calculate_md5(file_str)
-            
-            # Compare with stored hash
-            if file_str not in self.file_hashes:
-                # File is new
-                changes[file_str] = 'added'
-            elif self.file_hashes[file_str] != current_hash:
-                # File has been modified
-                changes[file_str] = 'modified'
-            
-            # Update stored hash
-            self.file_hashes[file_str] = current_hash
-        
-        # Check for deleted files
-        for stored_file in self.file_hashes:
-            if stored_file not in current_files:
-                changes[stored_file] = 'deleted'
-                # Remove from hashes since file no longer exists
-                del self.file_hashes[stored_file]
-        
-        return changes
-    
-    def update_graph(self, project_root: str, exclude_patterns: List[str] = None):
+        # TODO: 实现文件变更检测
+        # 参考逻辑：
+        #   current_files = set(walk_project(project_root, ParserFactory.supported_suffixes()))
+        #   last_files    = set(self._md5_cache.keys())
+        #   added    = list(current_files - last_files)
+        #   deleted  = list(last_files - current_files)
+        #   modified = [f for f in current_files & last_files
+        #               if file_md5(f) != self._md5_cache[f]]
+        logger.warning("check_changes: TODO 未实现，返回空变更")
+        return FileChanges(added=[], modified=[], deleted=[])
+
+    def apply_changes(self, changes: FileChanges) -> None:
         """
-        Update the knowledge graph based on file changes.
-        
-        Args:
-            project_root: Root directory of the project
-            exclude_patterns: List of patterns to exclude from the update
+        将 FileChanges 应用到图谱：
+        - deleted  → remove_file
+        - added    → parse + upsert
+        - modified → remove_file + parse + upsert
+        TODO: 当前为空实现。
         """
-        changes = self.check_changes(project_root, exclude_patterns)
-        
-        # Process added or modified files
-        for file_path, change_type in changes.items():
-            if change_type in ['added', 'modified']:
-                self._process_file(file_path)
-            elif change_type == 'deleted':
-                self._remove_file_from_graph(file_path)
-    
-    def _process_file(self, file_path: str):
+        # TODO: 实现增量更新逻辑
+        logger.warning("apply_changes: TODO 未实现，跳过")
+
+    def update_graph(self, project_root: str) -> None:
         """
-        Process a single file and update the graph accordingly.
-        
-        Args:
-            file_path: Path to the file to process
+        一步完成：check_changes → apply_changes。
+        TODO: 依赖上面两个方法。
         """
-        # Determine the file extension
-        ext = '.' + file_path.split('.')[-1]
-        
-        # Get the appropriate parser
-        parser = ParserFactory.create_parser(ext)
-        
-        # Parse the file to get nodes and relations
-        nodes, relations = parser.parse_file(file_path)
-        
-        # Remove any existing nodes/relations for this file
-        self._remove_file_nodes(file_path)
-        
-        # Add new nodes and relations to the graph
-        for node in nodes:
-            self.graph.add_node(node)
-        
-        for relation in relations:
-            self.graph.add_relation(relation)
-    
-    def _remove_file_nodes(self, file_path: str):
+        changes = self.check_changes(project_root)
+        if not changes.has_changes:
+            logger.info("增量更新：无文件变更，跳过")
+            return
+        logger.info(f"增量更新: {changes}")
+        self.apply_changes(changes)
+
+    # ── 单文件重建（apply_changes 内部使用）──────────
+    def _rebuild_file(self, file_abs_path: str) -> None:
         """
-        Remove all nodes and relations associated with a file.
-        
-        Args:
-            file_path: Path to the file whose nodes should be removed
+        删除旧节点并重新解析单个文件。
+        TODO: 实现细节。
         """
-        # Find nodes associated with this file
-        nodes_to_remove = []
-        for node_id, node in self.graph.nodes.items():
-            if node.path == file_path:
-                nodes_to_remove.append(node_id)
-        
-        # Remove nodes and their relations
-        for node_id in nodes_to_remove:
-            self._remove_node_and_relations(node_id)
-    
-    def _remove_node_and_relations(self, node_id: str):
-        """
-        Remove a node and all relations associated with it.
-        
-        Args:
-            node_id: ID of the node to remove
-        """
-        # Find relations to remove
-        relations_to_remove = []
-        for rel_id, relation in self.graph.relations.items():
-            if relation.source_id == node_id or relation.target_id == node_id:
-                relations_to_remove.append(rel_id)
-        
-        # Remove relations first
-        for rel_id in relations_to_remove:
-            del self.graph.relations[rel_id]
-            # Also remove from NetworkX graph
-            try:
-                self.graph.graph.remove_edge(relation.source_id, relation.target_id)
-            except nx.NetworkXError:
-                pass  # Edge might not exist
-        
-        # Then remove the node
-        if node_id in self.graph.nodes:
-            del self.graph.nodes[node_id]
-            try:
-                self.graph.graph.remove_node(node_id)
-            except nx.NetworkXError:
-                pass  # Node might not exist
-    
-    def _remove_file_from_graph(self, file_path: str):
-        """
-        Remove all traces of a file from the graph when the file is deleted.
-        
-        Args:
-            file_path: Path to the deleted file
-        """
-        self._remove_file_nodes(file_path)
+        # TODO:
+        #   suffix  = os.path.splitext(file_abs_path)[1]
+        #   if not ParserFactory.is_supported(suffix): return
+        #   content = read_file(file_abs_path)
+        #   if not content: return
+        #   parser = ParserFactory.get(suffix)
+        #   nodes, rels = parser.parse_file(file_abs_path, content)
+        #   self.graph.remove_file(file_abs_path)
+        #   self.graph.add_nodes(nodes)
+        #   self.graph.add_relations(rels)
+        #   self._md5_cache[file_abs_path] = file_md5(file_abs_path)
+        logger.warning(f"_rebuild_file: TODO 未实现，跳过 {file_abs_path}")

@@ -1,117 +1,85 @@
-"""
-Command line argument parsing for the code graph application.
-"""
-
+# cli/args.py
+# ── 命令行参数解析 ────────────────────────────────────────────────────
 import argparse
 
+from config.settings import settings
 
-def parse_args():
-    """
-    Parse command line arguments for the code graph application.
-    
-    Returns:
-        Parsed arguments namespace
-    """
+
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Code Graph - A tool for analyzing and navigating codebases using knowledge graphs"
+        prog="code-graph",
+        description="Python 项目代码知识图谱构建 & 查询工具",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  # 构建图谱
+  python main.py build -p ./my_project -o ./output/graph.pkl --export-json ./output/graph.json
+
+  # 查询图谱（纯节点匹配）
+  python main.py query -q "登录函数" -g ./output/graph.pkl
+
+  # 查询 + 生成 bash/grep 指令
+  python main.py query -q "哪些函数调用了 check_token" -g ./output/graph.pkl --gen-cmd
+        """,
     )
-    
-    # Create subparsers for different commands
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
-    
-    # Build command - analyze a project and build the knowledge graph
-    build_parser = subparsers.add_parser(
-        'build', 
-        help='Analyze a project and build the knowledge graph'
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # ── build 子命令 ──────────────────────────────────
+    build_p = subparsers.add_parser("build", help="解析项目，构建知识图谱")
+    build_p.add_argument(
+        "-p", "--project-path",
+        required=True,
+        metavar="PATH",
+        help="目标 Python 项目根路径",
     )
-    build_parser.add_argument(
-        'project_path',
-        type=str,
-        help='Path to the project to analyze'
+    build_p.add_argument(
+        "-o", "--output",
+        default=settings.GRAPH_SAVE_PATH,
+        metavar="PKL",
+        help=f"图谱 pickle 保存路径（默认: {settings.GRAPH_SAVE_PATH}）",
     )
-    build_parser.add_argument(
-        '--output',
-        type=str,
-        default='./graph_data/graph.pkl',
-        help='Output file for the knowledge graph (default: ./graph_data/graph.pkl)'
+    build_p.add_argument(
+        "--export-json",
+        default=None,
+        metavar="JSON",
+        help="同时导出 JSON 格式（可选）",
     )
-    build_parser.add_argument(
-        '--exclude',
-        type=str,
-        nargs='*',
-        default=['.git', '__pycache__', 'node_modules', '.venv', 'venv', 'dist', 'build'],
-        help='Patterns to exclude from analysis (default: .git __pycache__ node_modules .venv venv dist build)'
+    build_p.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="关闭进度条（适合日志重定向场景）",
     )
-    
-    # Query command - query the knowledge graph
-    query_parser = subparsers.add_parser(
-        'query',
-        help='Query the knowledge graph'
+
+    # ── query 子命令 ──────────────────────────────────
+    query_p = subparsers.add_parser("query", help="查询图谱，可生成 bash/grep 指令")
+    query_p.add_argument(
+        "-q", "--question",
+        required=True,
+        metavar="TEXT",
+        help="查询问题（自然语言）",
     )
-    query_parser.add_argument(
-        'question',
-        type=str,
-        help='Natural language question about the codebase'
+    query_p.add_argument(
+        "-g", "--graph-path",
+        default=settings.GRAPH_SAVE_PATH,
+        metavar="PKL",
+        help=f"图谱 pickle 路径（默认: {settings.GRAPH_SAVE_PATH}）",
     )
-    query_parser.add_argument(
-        '--graph-path',
-        type=str,
-        default='./graph_data/graph.pkl',
-        help='Path to the saved knowledge graph (default: ./graph_data/graph.pkl)'
+    query_p.add_argument(
+        "--gen-cmd",
+        action="store_true",
+        help="调用 LLM，根据图谱生成 bash/grep 定位指令",
     )
-    query_parser.add_argument(
-        '--format',
-        type=str,
-        choices=['pickle', 'json'],
-        default='pickle',
-        help='Format of the saved graph (default: pickle)'
+    query_p.add_argument(
+        "--top-n",
+        type=int,
+        default=10,
+        metavar="N",
+        help="最多返回 N 个匹配节点（默认: 10）",
     )
-    
-    # Export command - export the graph in different formats
-    export_parser = subparsers.add_parser(
-        'export',
-        help='Export the knowledge graph in different formats'
-    )
-    export_parser.add_argument(
-        'input_path',
-        type=str,
-        help='Path to the input knowledge graph'
-    )
-    export_parser.add_argument(
-        'output_path',
-        type=str,
-        help='Path for the exported graph'
-    )
-    export_parser.add_argument(
-        '--format',
-        type=str,
-        choices=['pickle', 'json'],
-        default='json',
-        help='Export format (default: json)'
-    )
-    
-    # Incremental update command - update the graph incrementally
-    update_parser = subparsers.add_parser(
-        'update',
-        help='Incrementally update the knowledge graph'
-    )
-    update_parser.add_argument(
-        'project_path',
-        type=str,
-        help='Path to the project to update'
-    )
-    update_parser.add_argument(
-        '--graph-path',
-        type=str,
-        default='./graph_data/graph.pkl',
-        help='Path to the existing knowledge graph (default: ./graph_data/graph.pkl)'
-    )
-    update_parser.add_argument(
-        '--exclude',
-        type=str,
-        nargs='*',
-        default=['.git', '__pycache__', 'node_modules', '.venv', 'venv', 'dist', 'build'],
-        help='Patterns to exclude from analysis (default: .git __pycache__ node_modules .venv venv dist build)'
-    )
-    
-    return parser.parse_args()
+
+    return parser
+
+
+def parse_args() -> argparse.Namespace:
+    return build_arg_parser().parse_args()
