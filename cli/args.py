@@ -1,6 +1,7 @@
 # cli/args.py
 # ── 命令行参数解析 ────────────────────────────────────────────────────
 import argparse
+import sys
 
 from config.settings import settings
 
@@ -23,7 +24,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         """,
     )
 
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    # 兼容低版本Python：手动处理subparsers的required（3.6-不支持required=True）
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.required = True  # 显式设置（3.7+支持，3.6-需这样写）
 
     # ── build 子命令 ──────────────────────────────────
     build_p = subparsers.add_parser("build", help="解析项目，构建知识图谱")
@@ -82,4 +85,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def parse_args() -> argparse.Namespace:
-    return build_arg_parser().parse_args()
+    import sys  # Add this if not already imported
+    print("\n🔍 DEBUG: Raw sys.argv:", sys.argv)  # Show raw input
+    parser = build_arg_parser()
+    try:
+        args = parser.parse_args()
+        print("✅ DEBUG: Parsed args:", args)  # Show successful parse
+    except argparse.ArgumentError as e:
+        print(f"\n❌ DEBUG: Parse error: {e}", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+    return args
